@@ -59,15 +59,6 @@ type Hana struct {
 	lockTransaction *sql.Tx
 }
 
-// contextWithTimeout returns a context with the given timeout applied.
-// If timeout is 0, returns a background context with a no-op cancel func.
-func contextWithTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
-	if timeout != 0 {
-		return context.WithTimeout(context.Background(), timeout)
-	}
-	return context.Background(), func() {}
-}
-
 // Open opens the DB from driver string.
 // Only validates parsing related errors.
 // Further validations are done in WithInstance.
@@ -135,10 +126,6 @@ func (h *Hana) Open(url string) (database.Driver, error) {
 
 func (h *Hana) Close() error {
 	return h.db.Close()
-}
-
-func (h *Hana) beginTx() (*sql.Tx, error) {
-	return h.db.BeginTx(context.Background(), &sql.TxOptions{Isolation: h.config.IsolationLevel})
 }
 
 func (h *Hana) Lock() error {
@@ -214,25 +201,6 @@ func (h *Hana) Run(migration io.Reader) error {
 	err = tx.Commit()
 	if err != nil {
 		return &database.Error{OrigErr: err, Err: "failed to commit migration transaction"}
-	}
-
-	return nil
-}
-
-func (h *Hana) runStatement(tx *sql.Tx, stmt []byte) error {
-	query := strings.TrimSpace(string(stmt))
-	query = strings.TrimSuffix(query, h.config.MultiStatementDelimiter)
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil
-	}
-
-	ctx, cancel := contextWithTimeout(h.config.StatementTimeout)
-	defer cancel()
-
-	_, err := tx.ExecContext(ctx, query)
-	if err != nil {
-		return &database.Error{OrigErr: err, Err: "migration failed", Query: []byte(query)}
 	}
 
 	return nil
@@ -438,6 +406,38 @@ func WithInstance(instance *sql.DB, config *Config) (database.Driver, error) {
 	}
 
 	return hx, nil
+}
+
+// contextWithTimeout returns a context with the given timeout applied.
+// If timeout is 0, returns a background context with a no-op cancel func.
+func contextWithTimeout(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout != 0 {
+		return context.WithTimeout(context.Background(), timeout)
+	}
+	return context.Background(), func() {}
+}
+
+func (h *Hana) beginTx() (*sql.Tx, error) {
+	return h.db.BeginTx(context.Background(), &sql.TxOptions{Isolation: h.config.IsolationLevel})
+}
+
+func (h *Hana) runStatement(tx *sql.Tx, stmt []byte) error {
+	query := strings.TrimSpace(string(stmt))
+	query = strings.TrimSuffix(query, h.config.MultiStatementDelimiter)
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+
+	ctx, cancel := contextWithTimeout(h.config.StatementTimeout)
+	defer cancel()
+
+	_, err := tx.ExecContext(ctx, query)
+	if err != nil {
+		return &database.Error{OrigErr: err, Err: "migration failed", Query: []byte(query)}
+	}
+
+	return nil
 }
 
 // ensureVersionTable checks if the migrations table exists and creates it if not.
